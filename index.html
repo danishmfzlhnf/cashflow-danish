@@ -1,0 +1,306 @@
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { GoogleGenAI, Type } from '@google/genai';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+
+app.use(express.json({ limit: '5mb' }));
+
+// Initialize Google GenAI on server
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    },
+  },
+});
+
+interface FinancialSummary {
+  totalBalance: number;
+  monthIncome: number;
+  monthExpense: number;
+  netCashflow: number;
+  daysLeftInMonth: number;
+  daysPassedInMonth: number;
+  daysInMonth: number;
+  dailyBurnRate: number;
+  calculatedCondition: 'deficit' | 'surplus' | 'critical' | 'healthy';
+  categoryExpenses: { category: string; amount: number; percentage: number }[];
+  categoryIncomes: { category: string; amount: number; percentage: number }[];
+  recentTransactions: {
+    id: string;
+    type: 'income' | 'expense';
+    amount: number;
+    category: string;
+    note: string;
+    date: string;
+    time: string;
+  }[];
+  lastTransaction?: {
+    type: 'income' | 'expense';
+    amount: number;
+    category: string;
+    note: string;
+  };
+}
+
+// Fallback smart rule-based generator
+function generateLocalAdvice(summary: FinancialSummary) {
+  const { totalBalance, monthIncome, monthExpense, netCashflow, daysLeftInMonth, categoryExpenses, lastTransaction } = summary;
+  const daysSafe = Math.max(daysLeftInMonth, 1);
+  const dailySurvival = Math.max(Math.floor(totalBalance / daysSafe), 0);
+
+  // Top expense category
+  const topExpense = categoryExpenses.length > 0 ? categoryExpenses[0] : null;
+
+  if (totalBalance < 150000 || (totalBalance > 0 && dailySurvival < 35000 && daysLeftInMonth > 3)) {
+    return {
+      status: 'critical',
+      headline: '🚨 Mode Survival: Batasi Pengeluaran Harian!',
+      advice: `Saldo kas tersisa Rp ${totalBalance.toLocaleString('id-ID')} dengan sisa ${daysSafe} hari lagi di bulan ini. Batas aman pengeluaran harianmu adalah maksimal Rp ${dailySurvival.toLocaleString('id-ID')}/hari agar bertahan tanpa berutang. Tunda semua pengeluaran non-primer.`,
+      actionableTips: [
+        `Maksimal belanja harian: Rp ${dailySurvival.toLocaleString('id-ID')}/hari hingga akhir bulan.`,
+        'Prioritaskan makan hemat (masak sendiri/warteg) dan hindari jajan kopi/kafe.',
+        'Bekukan sementara pembelian hobi, skin game, dan modifikasi kendaraan.'
+      ],
+      survivalBudgetDaily: dailySurvival,
+      recommendedSavingAmount: 0,
+      badge: 'Mode Survival Aktif'
+    };
+  }
+
+  if (monthExpense > monthIncome && monthExpense > 0) {
+    const deficitAmount = monthExpense - monthIncome;
+    return {
+      status: 'deficit',
+      headline: '⚠️ Peringatan: Arus Kas Mengalami Defisit!',
+      advice: `Bulan ini pengeluaranmu (Rp ${monthExpense.toLocaleString('id-ID')}) melampaui pemasukan (Rp ${monthIncome.toLocaleString('id-ID')}) dengan defisit Rp ${deficitAmount.toLocaleString('id-ID')}. Segera rem pos pengeluaran ${topExpense ? `"${topExpense.category}"` : 'non-esensial'} dan tunda rencana belanja sekunder.`,
+      actionableTips: [
+        topExpense ? `Evaluasi pos ${topExpense.category} yang memakan ${topExpense.percentage.toFixed(0)}% dari total pengeluaran.` : 'Identifikasi pengeluaran impulsif minggu ini.',
+        'Terapkan aturan 48 jam: tunda pembelian barang hobi/keinginan selama minimal 2 hari.',
+        'Cari peluang pendapatan tambahan (freelance/proyek sampingan) untuk menutup defisit.'
+      ],
+      survivalBudgetDaily: Math.max(Math.floor(totalBalance / daysSafe), 0),
+      recommendedSavingAmount: 0,
+      badge: 'Arus Kas Defisit'
+    };
+  }
+
+  if (monthIncome > monthExpense && monthIncome > 0) {
+    const surplusAmount = monthIncome - monthExpense;
+    const savingPercent = 30;
+    const savingTarget = Math.round((surplusAmount * savingPercent) / 100);
+    return {
+      status: 'surplus',
+      headline: '🎉 Apresiasi: Finansial Sehat & Berada di Zona Surplus!',
+      advice: `Luar biasa! Arus kas bulan ini positif surplus Rp ${surplusAmount.toLocaleString('id-ID')}. Pertahankan disiplin keuangan ini dan amankan minimal ${savingPercent}% (sekitar Rp ${savingTarget.toLocaleString('id-ID')}) untuk dialokasikan ke dana darurat atau tabungan produktif sebelum terpakai.`,
+      actionableTips: [
+        `Sisihkan Rp ${savingTarget.toLocaleString('id-ID')} (${savingPercent}% surplus) langsung ke rekening tabungan/investasi.`,
+        'Hindari "lifestyle inflation" meski pemasukan bertambah.',
+        'Tetapkan batasan anggaran untuk reward diri agar tetap terkontrol.'
+      ],
+      survivalBudgetDaily: Math.max(Math.floor(totalBalance / daysSafe), 0),
+      recommendedSavingAmount: savingTarget,
+      badge: 'Surplus Terjaga'
+    };
+  }
+
+  return {
+    status: 'healthy',
+    headline: '📊 Arus Kas Seimbang: Tetap Pantau Pengeluaran',
+    advice: `Keuanganmu saat ini berada dalam kendali stabil. Selalu catat setiap transaksi masuk dan keluar secara konsisten agar AI dapat memberikan rekomendasi anggaran yang semakin akurat.`,
+    actionableTips: [
+      'Terus catat pengeluaran harian tepat waktu.',
+      'Periksa rasio kebutuhan primer vs sekunder setiap akhir pekan.',
+      'Siapkan alokasi dana untuk pos terencana di bulan ini.'
+    ],
+    survivalBudgetDaily: Math.max(Math.floor(totalBalance / daysSafe), 0),
+    recommendedSavingAmount: 0,
+    badge: 'Stabil'
+  };
+}
+
+// AI Advisor Endpoint
+app.post('/api/advisor', async (req, res) => {
+  try {
+    const summary: FinancialSummary = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      const fallback = generateLocalAdvice(summary);
+      return res.json({ success: true, advisor: fallback, provider: 'heuristic-engine' });
+    }
+
+    const {
+      totalBalance,
+      monthIncome,
+      monthExpense,
+      netCashflow,
+      daysLeftInMonth,
+      categoryExpenses,
+      categoryIncomes,
+      recentTransactions,
+      lastTransaction,
+      calculatedCondition
+    } = summary;
+
+    const prompt = `Anda adalah "Danish Cash AI Financial Advisor", asisten keuangan pribadi yang cerdas, tajam, empatik, dan realistis untuk pengguna di Indonesia (menggunakan mata uang Rupiah).
+
+Kondisi Keuangan Saat Ini:
+- Total Saldo Tersisa: Rp ${totalBalance?.toLocaleString('id-ID') || 0}
+- Pemasukan Bulan Ini: Rp ${monthIncome?.toLocaleString('id-ID') || 0}
+- Pengeluaran Bulan Ini: Rp ${monthExpense?.toLocaleString('id-ID') || 0}
+- Arus Kas Bersih (Net Cashflow): Rp ${netCashflow?.toLocaleString('id-ID') || 0}
+- Sisa Hari di Bulan Ini: ${daysLeftInMonth || 1} hari
+- Status Analisis Sistem: ${calculatedCondition || 'healthy'}
+- Rincian Pengeluaran Terbesar per Kategori: ${JSON.stringify(categoryExpenses || [])}
+- Rincian Sumber Pemasukan: ${JSON.stringify(categoryIncomes || [])}
+- Transaksi Terakhir yang Baru Saja Disimpan: ${lastTransaction ? JSON.stringify(lastTransaction) : 'Tidak ada'}
+- 5 Transaksi Terbaru: ${JSON.stringify((recentTransactions || []).slice(0, 5))}
+
+Aturan Analisis Berdasarkan PRD Danish Cash:
+1. Kondisi Defisit (Pengeluaran > Pemasukan): Berikan peringatan tegas namun memotivasi untuk mengerem pengeluaran non-esensial (misal jajan kopi, nongkrong, makanan hedon, langganan software yang tidak terpakai), dan sarankan penundaan pembelian barang hobi/modifikasi kendaraan/gadget.
+2. Kondisi Surplus (Pemasukan > Pengeluaran): Berikan apresiasi atas kedisiplinan pengguna, dan sarankan persentase konkret (misal 20%-40%) untuk disisihkan ke tabungan/dana darurat/investasi serta hitung nominal Rupiahnya.
+3. Kondisi Kritis / Mode Survival (Saldo menipis mendekati akhir bulan, atau sisa saldo harian < Rp 35.000/hari): Aktifkan mode "Survival", hitung dan sebutkan batas maksimal pengeluaran harian (Rp per hari = Saldo / Sisa Hari) agar uang cukup sampai akhir bulan tanpa meminjam.
+4. Jika ada transaksi terakhir yang baru dicatat, singgung secara kontekstual dengan ramah namun jujur.
+
+Kembalikan respon DALAM FORMAT JSON sesuai schema:
+- status: string ("deficit" | "surplus" | "critical" | "healthy")
+- headline: string (judul singkat, tajam dengan icon/emoji yang sesuai)
+- advice: string (paragraf analisis mendalam, bahasa Indonesia santai namun profesional, langsung to the point)
+- actionableTips: array of string (2-3 aksi nyata yang bisa langsung dilakukan pengguna hari ini)
+- survivalBudgetDaily: number (estimasi batas harian jika kondisi kritis/defisit, atau 0)
+- recommendedSavingAmount: number (rekomendasi nominal ditabung jika surplus, atau 0)
+- badge: string (teks label singkat status seperti "Mode Survival Aktif", "Defisit Waspada", "Surplus Aman", dll.)
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        systemInstruction: 'Anda adalah konsultan keuangan pribadi handal dan tegas bernama Danish Cash Advisor. Selalu hasilkan JSON murni yang valid sesuai format.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            status: { type: Type.STRING },
+            headline: { type: Type.STRING },
+            advice: { type: Type.STRING },
+            actionableTips: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            survivalBudgetDaily: { type: Type.NUMBER },
+            recommendedSavingAmount: { type: Type.NUMBER },
+            badge: { type: Type.STRING }
+          },
+          required: ['status', 'headline', 'advice', 'actionableTips', 'badge']
+        }
+      }
+    });
+
+    const text = response.text?.trim() || '';
+    let parsedData;
+    try {
+      parsedData = JSON.parse(text);
+    } catch {
+      parsedData = generateLocalAdvice(summary);
+    }
+
+    return res.json({
+      success: true,
+      advisor: parsedData,
+      provider: 'gemini-3.8-flash'
+    });
+  } catch (error) {
+    console.error('Gemini API Error, falling back to heuristic engine:', error);
+    const fallback = generateLocalAdvice(req.body);
+    return res.json({
+      success: true,
+      advisor: fallback,
+      provider: 'fallback-heuristic'
+    });
+  }
+});
+
+// Quick natural language transaction parser via Gemini
+// e.g. "Beli nasi padang 25rb" -> { type: 'expense', amount: 25000, category: 'Makan', note: 'Nasi padang' }
+app.post('/api/parse-transaction', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Text prompt is required' });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'AI key not configured' });
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `Ekstrak data transaksi dari kalimat berikut: "${text}".
+Klasifikasikan apakah ini 'income' (pemasukan) atau 'expense' (pengeluaran).
+Kategori umum Income: Uang Saku, Proyek Web, Freelance, Gaji, Hadiah, Investasi, Lainnya.
+Kategori umum Expense: Makan, Transportasi, Kebutuhan Kuliah, Modifikasi Kendaraan, Hiburan/Game, Belanja, Tagihan, Kesehatan, Lainnya.
+Deteksi nominal angka uang rupiah (misal "25rb" = 25000, "1.5jt" = 1500000, "50k" = 50000).`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            type: { type: Type.STRING },
+            amount: { type: Type.NUMBER },
+            category: { type: Type.STRING },
+            note: { type: Type.STRING }
+          },
+          required: ['type', 'amount', 'category', 'note']
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text?.trim() || '{}');
+    return res.json({ success: true, data: parsed });
+  } catch (err) {
+    console.error('Parse transaction error:', err);
+    return res.status(500).json({ error: 'Failed to parse natural language' });
+  }
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    app: 'Danish Cash',
+    aiEnabled: Boolean(process.env.GEMINI_API_KEY)
+  });
+});
+
+async function setupServer() {
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Danish Cash server running on port ${PORT}`);
+  });
+}
+
+setupServer();
